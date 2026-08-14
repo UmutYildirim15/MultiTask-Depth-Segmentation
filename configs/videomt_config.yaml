@@ -1,0 +1,22 @@
+model:
+  name: "videomt"
+  args:
+    num_classes: 19
+    embed_dim: 768
+
+dataset:
+  type: "video"
+  image_size: 512
+
+training:
+  epochs: 100
+  batch_size: 4
+  learning_rate: 1e-4
+  weight_decay: 0.01
+  loss_lr: 1e-4
+
+testing:
+  batch_size: 4
+
+loss:
+  type: "static"

@@ -1,0 +1,21 @@
+model:
+  name: "resnet_mt" ## Example for Resnet
+  args:
+    num_classes: 19
+
+dataset:
+  type: "standard"
+  image_size: 512
+
+training:
+  epochs: 100
+  batch_size: 8
+  learning_rate: 1e-4
+  weight_decay: 0.01
+  loss_lr: 1e-4
+
+testing:
+  batch_size: 4
+
+loss:
+  type: "uncertainty"
