@@ -9,16 +9,6 @@ from ..core.aspp import ASPP
 DEFAULT_ASPP_CHANNELS = 256
 
 
-def _convert_to_dilated(layer: nn.Module, dilation: int = 2) -> None:
-    # Turns a ResNet stage's stride-2 convs into stride-1 dilated convs in place, keeping the output stride at 16 instead of letting it drop to 32.
-    for m in layer.modules():
-        if isinstance(m, nn.Conv2d) and m.stride == (2, 2):
-            m.stride = (1, 1)
-            if m.kernel_size in ((3, 3), 3):
-                m.dilation = (dilation, dilation)
-                m.padding = (dilation, dilation)
-
-
 class ResNet50MultiTask(nn.Module):
     def __init__(self, num_classes: int = 19):
         super().__init__()
@@ -28,10 +18,9 @@ class ResNet50MultiTask(nn.Module):
         self.layer1 = backbone.layer1  # stride 1, 256 ch
         self.layer2 = backbone.layer2  # stride 2, 512 ch
         self.layer3 = backbone.layer3  # stride 2, 1024 ch
-        self.layer4 = backbone.layer4  # stride 2 -> converted to dilated below
+        self.layer4 = backbone.layer4
 
-        _convert_to_dilated(self.layer4, dilation=2)
-
+        # Segmentation branch: ASPP on the raw 2048-channel F_base.
         self.aspp = ASPP(in_channels=2048, out_channels=DEFAULT_ASPP_CHANNELS)
         self.seg_head = nn.Sequential(
             nn.Conv2d(DEFAULT_ASPP_CHANNELS, DEFAULT_ASPP_CHANNELS, kernel_size=3, padding=1, bias=False),
@@ -39,11 +28,14 @@ class ResNet50MultiTask(nn.Module):
             nn.ReLU(inplace=True),
             nn.Conv2d(DEFAULT_ASPP_CHANNELS, num_classes, kernel_size=1),
         )
+
+        # Depth branch
         self.depth_head = nn.Sequential(
-            nn.Conv2d(DEFAULT_ASPP_CHANNELS, 128, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(128),
+            nn.Conv2d(2048, 256, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
-            nn.Conv2d(128, 64, kernel_size=3, padding=1, bias=False),
+            nn.Conv2d(256, 64, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
             nn.Conv2d(64, 1, kernel_size=1),
         )
@@ -54,11 +46,12 @@ class ResNet50MultiTask(nn.Module):
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
-        x = self.layer4(x)
-        x = self.aspp(x)
+        f_base = self.layer4(x)  # B x 2048 x 16 x 16
 
-        seg_logits = self.seg_head(x)
-        depth_logits = self.depth_head(x)
+        seg_feat = self.aspp(f_base)  # B x 256 x 16 x 16
+        seg_logits = self.seg_head(seg_feat)  # B x num_classes x 16 x 16
+
+        depth_logits = self.depth_head(f_base)  # B x 1 x 16 x 16, independent of ASPP/seg_head
 
         seg_logits = F.interpolate(seg_logits, size=input_shape, mode="bilinear", align_corners=False)
         depth_logits = F.interpolate(depth_logits, size=input_shape, mode="bilinear", align_corners=False)

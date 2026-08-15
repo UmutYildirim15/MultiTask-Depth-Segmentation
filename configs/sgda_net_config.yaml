@@ -17,7 +17,11 @@ training:
       lr: 6e-5
     - attr: "segformer.decode_head"
       lr: 1e-4
-    - attr: "depth_head"
+    - attr: "depth_feat"
+      lr: 1e-4
+    - attr: "cross_attention"
+      lr: 1e-4
+    - attr: "depth_out"
       lr: 1e-4
 
 testing:

@@ -19,4 +19,4 @@ testing:
   batch_size: 4
 
 loss:
-  type: "static"
+  type: "uncertainty"

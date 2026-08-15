@@ -5,7 +5,7 @@ import torch
 from models.registry import build_model, get_task_type
 
 
-def measure_inference_speed(config_path, input_shape=(1, 3, 512, 512), iterations=100, warmup=10):
+def measure_inference_speed(config_path, input_shape=(1, 3, 512, 512), iterations=100, warmup=50):
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
 

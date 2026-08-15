@@ -10,10 +10,11 @@ from tqdm import tqdm
 
 from datasets.synthia import get_dataloader as get_standard_loader
 from models.registry import build_model, get_task_type
-from utils.losses import UncertaintyLoss
+from utils.losses import UncertaintyLoss, EnhancedDepthLoss, SILogLoss
 from utils.logger import setup_logger
 
 from datasets.synthia_video import get_video_dataloader as get_video_loader
+
 
 def get_optimizer_groups(model, config):
     if 'optim_groups' in config['training']:
@@ -25,9 +26,22 @@ def get_optimizer_groups(model, config):
     return [{'params': model.parameters(), 'lr': float(config['training']['learning_rate'])}]
 
 
-def train(config_path, data_dir, save_dir, resume_checkpoint=None):
+def combine_task_losses(loss_module, loss_type, loss_seg, loss_depth):
+    # Combines a seg loss and a depth loss according to config['loss']['type'].
+    #'uncertainty' -> learned homoscedastic weighting (Kendall et al.), shared with the standard (single-frame) multitask path.
+    #'static'  -> plain unweighted sum (previous video-branch behavior, kept available for models that should not use the learned weighting).
+
+    if loss_type == "uncertainty":
+        return loss_module.combine_losses(loss_seg, loss_depth)
+    return loss_seg + loss_depth
+
+
+def train(config_path, data_dir, save_dir, resume_checkpoint=None, model_override=None):
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
+
+    if model_override is not None:
+        config['model']['name'] = model_override
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     os.makedirs(save_dir, exist_ok=True)
@@ -35,9 +49,10 @@ def train(config_path, data_dir, save_dir, resume_checkpoint=None):
     model_name = config['model']['name']
     task_type = get_task_type(model_name)
     is_video = config['dataset'].get('type', 'standard') == 'video'
+    loss_type = config.get('loss', {}).get('type', 'uncertainty')
 
     logger = setup_logger(model_name, save_dir)
-    logger.info(f"Training {model_name} on {device.type.upper()}")
+    logger.info(f"Training {model_name} on {device.type.upper()} (loss type: {loss_type})")
 
     # Choice between two dataloaders.
     if is_video:
@@ -46,7 +61,10 @@ def train(config_path, data_dir, save_dir, resume_checkpoint=None):
         train_loader = get_standard_loader(data_dir, batch_size=config['training']['batch_size'], is_train=True)
 
     model = build_model(model_name, **config['model'].get('args', {})).to(device)
-    loss_module = UncertaintyLoss().to(device)
+
+    depth_loss_name = config.get('loss', {}).get('depth_loss', 'silog')
+    depth_loss_fn = EnhancedDepthLoss() if depth_loss_name == 'enhanced' else SILogLoss()
+    loss_module = UncertaintyLoss(depth_loss_fn=depth_loss_fn).to(device)
 
     optim_params = get_optimizer_groups(model, config)
     optim_params.append({'params': loss_module.parameters(), 'lr': float(config['training'].get('loss_lr', 1e-4))})
@@ -84,13 +102,10 @@ def train(config_path, data_dir, save_dir, resume_checkpoint=None):
 
                     sem1, dep_out1, queries_t1 = model(img1, prev_queries=None)
                     sem2, dep_out2, _ = model(img2, prev_queries=queries_t1.detach())
+                    l_seg = loss_module.ce(sem1, mask1) + loss_module.ce(sem2, mask2)
+                    l_dep = loss_module.depth(dep_out1, dep1) + loss_module.depth(dep_out2, dep2)
 
-                    l_seg1 = loss_module.ce(sem1, mask1)
-                    l_dep1 = loss_module.depth(dep_out1, dep1)
-                    l_seg2 = loss_module.ce(sem2, mask2)
-                    l_dep2 = loss_module.depth(dep_out2, dep2)
-
-                    loss = l_seg1 + l_dep1 + l_seg2 + l_dep2
+                    loss = combine_task_losses(loss_module, loss_type, l_seg, l_dep)
                 else:
                     # STANDARD
                     imgs, msks, depths = batch[0].to(device), batch[1].to(device), batch[2].to(device)
@@ -104,10 +119,15 @@ def train(config_path, data_dir, save_dir, resume_checkpoint=None):
                         depth_logits = F.interpolate(depth_logits, size=depths.shape[-2:], mode="bilinear",
                                                      align_corners=False)
 
-                    loss = loss_module(seg_logits, msks, depth_logits,
-                                       depths) if task_type == "multitask" else loss_module.ce(seg_logits, msks)
+                    if task_type == "multitask":
+                        l_seg = loss_module.ce(seg_logits, msks)
+                        l_dep = loss_module.depth(depth_logits, depths)
+                        loss = combine_task_losses(loss_module, loss_type, l_seg, l_dep)
+                    else:
+                        loss = loss_module.ce(seg_logits, msks)
 
-            scaler.scale(loss).backward()
+
+            scaler.scale(loss).backward(retain_graph=True)
             scaler.step(optimizer)
             scaler.update()
 
@@ -138,5 +158,10 @@ if __name__ == "__main__":
     parser.add_argument("--data", type=str, required=True)
     parser.add_argument("--save_dir", type=str, required=True)
     parser.add_argument("--resume", type=str, default=None)
+    parser.add_argument(
+        "--model", type=str, default=None,
+        help="Override config['model']['name']"
+             "resnet_mt/pidnet/mobilevit/segformer_mt/topformer",
+    )
     args = parser.parse_args()
-    train(args.config, args.data, args.save_dir, args.resume)
+    train(args.config, args.data, args.save_dir, args.resume, model_override=args.model)

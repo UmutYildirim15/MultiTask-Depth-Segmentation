@@ -1,4 +1,4 @@
-# Loss functions shared across the segmentation + depth multi-task models."""
+# Loss functions shared across the segmentation + depth multi-task models.
 
 import torch
 import torch.nn as nn
@@ -56,6 +56,7 @@ class EnhancedDepthLoss(nn.Module):
 
 
 class UncertaintyLoss(nn.Module):
+    # Homoscedastic-uncertainty-weighted combination of a segmentation loss and a depth loss (Kendall et al.).
 
     def __init__(self, ignore_index: int = 255, depth_loss_fn: nn.Module = None):
         super().__init__()
@@ -64,10 +65,18 @@ class UncertaintyLoss(nn.Module):
         self.seg_loss_fn = nn.CrossEntropyLoss(ignore_index=ignore_index)
         self.depth_loss_fn = depth_loss_fn if depth_loss_fn is not None else SILogLoss()
 
+    def ce(self, seg_pred, seg_gt):
+        return self.seg_loss_fn(seg_pred, seg_gt)
+
+    def depth(self, depth_pred, depth_gt):
+        return self.depth_loss_fn(depth_pred, depth_gt)
+
     def forward(self, seg_pred, seg_gt, depth_pred, depth_gt):
         loss_seg = self.seg_loss_fn(seg_pred, seg_gt)
         loss_depth = self.depth_loss_fn(depth_pred, depth_gt)
+        return self.combine_losses(loss_seg, loss_depth)
 
+    def combine_losses(self, loss_seg, loss_depth):
         precision_seg = torch.exp(-self.log_var_seg)
         precision_depth = torch.exp(-self.log_var_depth)
 

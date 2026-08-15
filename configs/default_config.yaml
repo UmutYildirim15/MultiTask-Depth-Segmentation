@@ -1,5 +1,5 @@
 model:
-  name: "resnet_mt" ## Example for Resnet
+  name: "resnet_mt"   # overridden by --model at the CLI
   args:
     num_classes: 19
 
